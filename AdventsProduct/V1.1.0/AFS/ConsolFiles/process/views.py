@@ -1,16 +1,15 @@
-import logging
 import json
 from django.views.decorators.csrf import csrf_exempt
-from .models import *
 from django.http import JsonResponse
 import uuid
-from django.db import connection
-import pandas as pd
 from rest_framework import viewsets
 from rest_framework.generics import ListAPIView
 from .serializers import *
 from datetime import datetime
-from .keyword_check import KeywordsUniqueCheck
+from pathlib import Path
+from . import keyword_check as kc
+from . packages import validate_file as vf
+
 # from AFS.Scripts.read_file import get_data_from_file
 # import numpy as np
 # import shutil
@@ -130,20 +129,20 @@ class FileUploadsViewGeneric(ListAPIView):
                 return queryset.filter(tenants_id=tenants_id, groups_id=groups_id, entities_id=entities_id,
                                        m_processing_layer_id=m_processing_layer_id,
                                        m_processing_sub_layer_id=m_processing_sub_layer_id,
-                                       processing_layer_id=processing_layer_id, is_active=1, status=status)
+                                       processing_layer_id=processing_layer_id, is_active=1, status=status, gst_month__isnull=False)
 
             if tenants_id and groups_id and entities_id and m_processing_layer_id and m_processing_sub_layer_id and processing_layer_id and is_active:
                 if is_active == 'yes':
                     return queryset.filter(tenants_id=tenants_id, groups_id=groups_id, entities_id=entities_id,
                                            m_processing_layer_id=m_processing_layer_id,
                                            m_processing_sub_layer_id=m_processing_sub_layer_id,
-                                           processing_layer_id=processing_layer_id, is_active=1)
+                                           processing_layer_id=processing_layer_id, is_active=1).order_by('-id')[:100]
 
                 elif is_active == 'no':
                     return queryset.filter(tenants_id=tenants_id, groups_id=groups_id, entities_id=entities_id,
                                            m_processing_layer_id=m_processing_layer_id,
                                            m_processing_sub_layer_id=m_processing_sub_layer_id,
-                                           processing_layer_id=processing_layer_id, is_active=0)
+                                           processing_layer_id=processing_layer_id, is_active=0).order_by('-id')[:100]
 
             return queryset.filter(tenants_id=0)
         except Exception:
@@ -233,7 +232,7 @@ def get_edit_sources(request, *args, **kwargs):
                 if key == "keywords":
                     keywords = value
 
-            keywords_unique_check = KeywordsUniqueCheck(keyword = keywords.lower())
+            keywords_unique_check = kc.KeywordsUniqueCheck(keyword = keywords.lower())
             keywords_unique_check_output = keywords_unique_check.get_keyword_unique_check_output()
 
             if keywords_unique_check_output:
@@ -269,21 +268,21 @@ def get_create_source_definitions(request, *args, **kwargs):
             for key, value in data.items():
                 if key == "tenants_id":
                     tenants_id = value
-                elif key == "groups_id":
+                if key == "groups_id":
                     groups_id = value
-                elif key == "entities_id":
+                if key == "entities_id":
                     entities_id = value
-                elif key == "m_processing_layer_id":
+                if key == "m_processing_layer_id":
                     m_processing_layer_id = value
-                elif key == "m_processing_sub_layer_id":
+                if key == "m_processing_sub_layer_id":
                     m_processing_sub_layer_id = value
-                elif key == "processing_layer_id":
+                if key == "processing_layer_id":
                     processing_layer_id = value
-                elif key == "user_id":
+                if key == "user_id":
                     user_id = value
-                elif key == "sources_id":
+                if key == "sources_id":
                     sources_id = value
-                elif key == "source_def_list":
+                if key == "source_def_list":
                     source_def_list = value
 
             if SourceDefinitions.objects.filter(sources_id = sources_id, is_active = True).exists():
@@ -291,7 +290,7 @@ def get_create_source_definitions(request, *args, **kwargs):
                 # print("source_definition_list", source_def_v)
                 for setting in source_def_v:
                     setting.is_active = False
-                    print("inside loop source_list", setting)
+                    # print("inside loop source_list", setting)
                     setting.save()
 
             # print("source_def_list", source_def_list)
@@ -333,6 +332,39 @@ def get_create_source_definitions(request, *args, **kwargs):
         logger.error("Error in Get Create Source Definitions Function!!!", exc_info=True)
         return JsonResponse({"Status": "Error"})
 
+def get_storage_reference_config(target_def_list):
+    try:
+        count_for_text = 0
+        count_for_int = 0
+        count_for_dec = 0
+        count_for_date = 0
+
+        storage_column_name_list = []
+        for i in range(0, len(target_def_list)):
+            if target_def_list[i]["fieldType"] == 'char':
+                count_for_text = count_for_text + 1
+                name = 'reference_text_' + str(count_for_text)
+
+            elif target_def_list[i]["fieldType"] == 'integer':
+                count_for_int = count_for_int + 1
+                name = 'reference_int_' + str(count_for_int)
+
+            elif target_def_list[i]["fieldType"] == 'decimal':
+                count_for_dec = count_for_dec + 1
+                name = 'reference_dec_' + str(count_for_dec)
+
+            elif target_def_list[i]["fieldType"] == 'date':
+                count_for_date = count_for_date + 1
+                name = 'reference_date_' + str(count_for_date)
+
+            storage_column_name_list.append(name)
+
+        return storage_column_name_list
+
+    except Exception:
+        logger.error("Error in Get Storage Config Function!!!", exc_info=True)
+        return ""
+
 @csrf_exempt
 def get_create_target_definitions(request, *args, **kwargs):
     try:
@@ -346,48 +378,54 @@ def get_create_target_definitions(request, *args, **kwargs):
                     tenants_id = value
                 if key == "groups_id":
                     groups_id = value
-                elif key == "entities_id":
+                if key == "entities_id":
                     entities_id = value
-                elif key == "m_processing_layer_id":
+                if key == "m_processing_layer_id":
                     m_processing_layer_id = value
-                elif key == "m_processing_sub_layer_id":
+                if key == "m_processing_sub_layer_id":
                     m_processing_sub_layer_id = value
-                elif key == "processing_layer_id":
+                if key == "processing_layer_id":
                     processing_layer_id = value
-                elif key == "target_files_id":
+                if key == "target_files_id":
                     target_files_id = value
-                elif key == "target_def_list":
+                if key == "target_def_list":
                     target_def_list = value
-                elif key == "user_id":
+                if key == "user_id":
                     user_id = value
 
 
-            if TargetFileDefinitions.objects.filter(target_files_id = target_files_id, is_active = True).exists():
-                target_def_v = TargetFileDefinitions.objects.filter(target_files_id = target_files_id, is_active = True)
+            if TargetFileDefinitions.objects.filter(target_files_id = target_files_id, is_active = 1).exists():
+                target_def_v = TargetFileDefinitions.objects.filter(target_files_id = target_files_id, is_active = 1)
                 for setting in target_def_v:
                     setting.is_active = False
                     setting.save()
 
-            for target_def in target_def_list:
-                TargetFileDefinitions.objects.create(
-                    tenants_id = tenants_id,
-                    groups_id = groups_id,
-                    entities_id = entities_id,
-                    m_processing_layer_id = m_processing_layer_id,
-                    m_processing_sub_layer_id = m_processing_sub_layer_id,
-                    processing_layer_id = processing_layer_id,
-                    field_name = target_def["fieldName"],
-                    field_sequence = str(target_def["fieldPosition"]),
-                    files_config = None,
-                    is_active = True,
-                    created_by = user_id,
-                    created_date = str(datetime.today()),
-                    modified_by = user_id,
-                    modified_date = str(datetime.today()),
-                    target_files_id = target_files_id
-                )
+            storage_column_fields = get_storage_reference_config(target_def_list)
 
-            return JsonResponse({"Status": "Success", "Message": "Target Definitions Created Successfully!!!"})
+            if len(storage_column_fields) > 0:
+                for i in range(0, len(target_def_list)):
+                    TargetFileDefinitions.objects.create(
+                        tenants_id = tenants_id,
+                        groups_id = groups_id,
+                        entities_id = entities_id,
+                        m_processing_layer_id = m_processing_layer_id,
+                        m_processing_sub_layer_id = m_processing_sub_layer_id,
+                        processing_layer_id = processing_layer_id,
+                        field_name = target_def_list[i]["fieldName"],
+                        field_sequence = str(target_def_list[i]["fieldPosition"]),
+                        field_type = target_def_list[i]["fieldType"],
+                        files_config = None,
+                        storage_reference_column = storage_column_fields[i],
+                        is_active = True,
+                        created_by = user_id,
+                        created_date = str(datetime.today()),
+                        modified_by = user_id,
+                        modified_date = str(datetime.today()),
+                        target_files_id = target_files_id
+                    )
+
+                return JsonResponse({"Status": "Success", "Message": "Target Definitions Created Successfully!!!"})
+            return JsonResponse({"Status": "Error"})
         return JsonResponse({"Status": "Error"})
 
     except Exception:
@@ -409,12 +447,30 @@ def get_create_target_mapping(request, *args, **kwargs):
                 if key == "target_def_list":
                     target_def_list = value
 
-            if TargetFileDefinitions.objects.filter(target_files_id = target_id, id = target_def_id, is_active = True).exists():
-                target_files_definitions = TargetFileDefinitions.objects.filter(id = target_def_id, target_files_id = target_id, is_active = True)
-                print(target_files_definitions)
+            if TargetFileDefinitions.objects.filter(target_files_id = target_id, id = target_def_id, is_active = 1).exists():
+                target_files_definitions = TargetFileDefinitions.objects.filter(id = target_def_id, target_files_id = target_id, is_active = 1)
+                # print(target_files_definitions)
                 for setting in target_files_definitions:
                     setting.files_config = target_def_list
                     setting.save()
+
+                source_ids_list = []
+                for target_def in target_def_list:
+                    source_ids_list.append(target_def["sourceId"])
+
+                source_ids_list_unique = list(set(source_ids_list))
+
+                for source_id in source_ids_list_unique:
+
+                    sources = Sources.objects.filter(id = source_id, is_active = True)
+                    for source in sources:
+                        source_config = source.source_config
+                        source_config_target_ids_list = source_config["target_ids"]
+                        source_config_target_ids_list.append(target_id)
+                        source_config_target_ids_list_unique = list(set(source_config_target_ids_list))
+                        source_config["target_ids"] = source_config_target_ids_list_unique
+                        source.source_config = source_config
+                        source.save()
 
                 return JsonResponse({"Status": "Success", "Message": "Mapping Created Successfully!!!"})
             return JsonResponse({"Status": "Error", "Message": "Target Does Not Exists!!!"})
@@ -428,7 +484,16 @@ def get_create_target_mapping(request, *args, **kwargs):
 def get_update_validate_error_to_batch(request, *args, **kwargs):
     try:
         if request.method == "POST":
-            pass
+            body = request.body.decode('utf-8')
+            data = json.loads(body)
+
+            for key, value in data.items():
+                if key == "validateFileIdsList":
+                    file_id_list = value
+            FileUploads.objects.filter(id__in=file_id_list, is_active=1, extraction_type='FOLDER').update(status="BATCH", comments="File Queued in Batch!!!")
+
+            return JsonResponse({"Status": "Success", "Message": "File in Batch Status!!!"})
+
         return JsonResponse({"Status": "Error"})
     except Exception:
         logger.error("Error in Get Update Validate Error to Batch Function!!!", exc_info=True)
@@ -438,7 +503,30 @@ def get_update_validate_error_to_batch(request, *args, **kwargs):
 def get_update_file_gst_month(request, *args, **kwargs):
     try:
         if request.method == "POST":
-            pass
+            body = request.body.decode('utf-8')
+            data = json.loads(body)
+
+            for key, value in data.items():
+                if key == "fileId":
+                    file_id = value
+                if key == "gstRemittanceMonth":
+                    gst_month = value
+                if key == "fileRequired":
+                    file_required = value
+
+            remove_file = True
+            if str(file_required) == "1":
+                remove_file = False
+
+            if FileUploads.objects.filter(id=file_id, is_active=1).exists():
+                files_upload = FileUploads.objects.filter(id=file_id, is_active=1)
+                #print(files_upload)
+                for setting in files_upload:
+                    setting.gst_month = gst_month
+                    setting.is_active = remove_file
+                    setting.save()
+                return JsonResponse({"Status": "Success", "Message": "Gst Month Updated!!!"})
+            return JsonResponse({"Status": "Error", "Message": "File Does Not Exists!!!"})
         return JsonResponse({"Status": "Error"})
     except Exception:
         logger.error("Error in Get Update Validate Error to Batch Function!!!", exc_info=True)
@@ -448,75 +536,427 @@ def get_update_file_gst_month(request, *args, **kwargs):
 def get_update_file_gst_month_all(request, *args, **kwargs):
     try:
         if request.method == "POST":
-            pass
+            body = request.body.decode('utf-8')
+            data = json.loads(body)
+
+            for key, value in data.items():
+                if key == "fileUploadsIdList":
+                    file_id_list = value
+                if key == "gstRemittanceMonth":
+                    gst_month = value
+
+            FileUploads.objects.filter(id__in=file_id_list, is_active=1, status="VALIDATED").update(gst_month=gst_month)
+
+            return JsonResponse({"Status": "Success", "Message": "Gst Month Updated!!!"})
         return JsonResponse({"Status": "Error"})
     except Exception:
         logger.error("Error in Get Update Validate Error to Batch Function!!!", exc_info=True)
         return JsonResponse({"Status": "Error"})
 
-# def get_out(request):
-#     try:
-#
-#         target_id=1
-#         target_def = TargetFileDefinitions.objects.filter(target_files=target_id)
-#         target_col_list = []
-#         len_target_field = len(target_def)
-#         print(len_target_field)
-#         for target in target_def:
-#             target_col_list.append(
-#                 {
-#                     "target_col": target.field_name,
-#                     "target_config": target.files_config,
-#                     "target_storage_colm": target.storage_colm
-#                 }
-#             )
-#         contain_id = []
-#         contain_target_def_col = []
-#         contain_source_name = []
-#         contain_storage_colm=[]
-#         for i in range(0, len_target_field):
-#             contain_storage_colm.append(target_col_list[i]['target_storage_colm'])
-#             for tar_con in target_col_list[i]['target_config']['source_data']:
-#                 contain_id.append(tar_con['source_id'])
-#                 contain_target_def_col.append(tar_con['source_def_name'])
-#         contain_id = list(set(contain_id))
-#         res = []
-#         for i in contain_target_def_col:
-#             if i not in res:
-#                 res.append(i)
-#         list_col = list(set(contain_target_def_col))
-#         data_final_df_list = []
-#         for j in contain_id:
-#             for i in range(0, len(set(contain_target_def_col))):
-#
-#                 for tar_con in target_col_list[i]['target_config']['source_data']:
-#                     if tar_con['source_id'] == j:
-#                         contain_source_name.append(tar_con['source_def_name'])
-#             get_output = get_data_from_file(get_excel_loc(j), 'sheet1', 'xlsx', contain_source_name, 1, '', '',
-#                                             '', '', '')
-#             get_data = final_data(get_output, contain_source_name, list_col)
-#             print("/n#################")
-#             print(get_data)
-#             data_dict = dict()
-#             for z in range(0, len(get_data)):
-#                 data_dict[list_col[z]] = get_data[z]
-#             proper_data_df = pd.DataFrame(data_dict)
-#             data_final_df_list.append(proper_data_df)
-#             contain_source_name.clear()
-#         print("Final Data")
-#         data_final_df = pd.concat(data_final_df_list, axis=0, ignore_index=False)
-#         data_final_df_proper = data_final_df.replace(np.nan, "")
-#         print(data_final_df_proper)
-#         data_final_df_proper=data_final_df_proper.reindex(columns=res)
-#         print(data_final_df_proper)
-#         print(data_final_df_proper.columns)
-#         print("Storage coloum name")
-#         storage_save(data_final_df_proper,contain_storage_colm,target_id)
-#         return JsonResponse({"Status": "Success"})
-#     except Exception as e:
-#         print(e)
-#         return JsonResponse({"Status": "Error"})
-#
+def get_proper_file_name(file_name):
+    try:
+        file_name_extension = "." + file_name.split(".")[-1]
+        file_name_without_extension = file_name.replace(file_name_extension, "")
+        file_name_date = file_name_without_extension.replace(".", "") + "_" + str(datetime.now()).replace("-", "_").replace(" ", "_").replace(":", "_").replace(".","_") + file_name_extension
+        file_name_proper = file_name_date.replace(" ", "_").replace("-", "_").replace("'", "").replace("#", "_No_").replace("&", "_").replace("(", "_").replace(")", "_")
+        return file_name_proper
+    except Exception:
+        logger.error("Error in Getting Proper File Name!!!", exc_info=True)
+        return "Error"
+
+def get_create_file_upload_record(**kwargs):
+    try:
+        FileUploads.objects.create(
+            tenants_id = kwargs["tenant_id"],
+            groups_id = kwargs["groups_id"],
+            entities_id = kwargs["entity_id"],
+            m_sources_id = kwargs["m_source_id"],
+            source_name = kwargs["source_name"],
+            m_processing_layer_id = kwargs["m_processing_layer_id"],
+            m_processing_sub_layer_id = kwargs["m_processing_sub_layer_id"],
+            processing_layer_id = kwargs["processing_layer_id"],
+            source_type = 'FILE',
+            extraction_type = 'UPLOAD',
+            file_name = kwargs["file_name"],
+            file_size_bytes = kwargs["file_size"],
+            file_path = kwargs["file_path"],
+            status = kwargs["status"],
+            comments = kwargs["comment"],
+            file_row_count = kwargs["row_count"],
+            is_processed = 0,
+            is_active = True,
+            created_by = kwargs["user_id"],
+            created_date = str(datetime.today()),
+            modified_by = kwargs["user_id"],
+            modified_date = str(datetime.today()),
+            gst_month = kwargs["gst_month"]
+        )
+        return "Success"
+    except Exception:
+        logger.error("Error in Getting Proper File Name!!!", exc_info=True)
+        return "Error"
+
+
+@csrf_exempt
+def get_upload_file_sequential(request, *args, **kwargs):
+    try:
+        if request.method == 'POST':
+
+            file_name = request.FILES["fileName"].name
+            tenant_id = request.POST.get("tenantsId")
+            groups_id = request.POST.get("groupsId")
+            entity_id = request.POST.get("entityId")
+            m_processing_layer_id = request.POST.get("mProcessingLayerId")
+            m_processing_sub_layer_id = request.POST.get("mProcessingSubLayerId")
+            processing_layer_id = request.POST.get("processingLayerId")
+            user_id = request.POST.get("userId")
+            gst_month = request.POST.get("gstRemittanceMonth")
+            m_source_id = request.POST.get("sourceId")
+
+            sources = Sources.objects.filter(id = m_source_id, is_active = True)
+
+            for source in sources:
+                source_name = source.source_name
+                file_path = source.source_import_location
+
+            file_name_with_date = file_path + "/" +  get_proper_file_name(file_name)
+
+            with open(file_name_with_date, 'wb+') as destination:
+                for chunk in request.FILES["fileName"]:
+                    destination.write(chunk)
+
+
+            source_dict = Sources.objects.filter(id = m_source_id, is_active = 1).values()[0]
+            source_def_dict = list(SourceDefinitions.objects.filter(sources_id = m_source_id, is_active = 1).order_by('attribute_position').values())
+
+            validate_file = vf.FileValidation(file = file_name_with_date, source_dict = source_dict, source_def_dict = source_def_dict)
+
+            file_size = Path(file_name_with_date).stat().st_size
+
+            status = "VALIDATION ERROR"
+            comments = ''
+
+            keyword_check = validate_file.get_keyword_check()
+            # print("keyword_check", keyword_check)
+
+            if not keyword_check:
+                comments = "File Name Does not Match with Source!!!"
+                file_uploads_create = get_create_file_upload_record(
+                    tenant_id = tenant_id,
+                    groups_id = groups_id,
+                    entity_id = entity_id,
+                    m_source_id = m_source_id,
+                    source_name = source_name,
+                    m_processing_layer_id = m_processing_layer_id,
+                    m_processing_sub_layer_id = m_processing_sub_layer_id,
+                    processing_layer_id = processing_layer_id,
+                    file_name = file_name_with_date.split("/")[-1],
+                    file_size = file_size,
+                    file_path = file_name_with_date,
+                    status = status,
+                    comment = comments,
+                    row_count = 0,
+                    user_id = user_id,
+                    gst_month = None
+                )
+
+                if file_uploads_create == "Success":
+                    return JsonResponse({"Status": "Success", "Message": "File Uploaded Successfully!!!"})
+                elif file_uploads_create == "Error":
+                    return JsonResponse({"Status": "Error"})
+
+            else:
+                position_check = validate_file.get_check_column_position()
+                # print("position_check", position_check)
+
+                if not position_check:
+                    mismatch_data_list = validate_file.get_mismatch_data_list()
+
+                    for mismatch_data in mismatch_data_list:
+                        comments = comments + "Position " + str(mismatch_data["position"]) + " is mismatched. Original defined definition is " + "'" + mismatch_data["source_def_attr_name"] + "'" + ". Uploaded Data Column is " + "'" + mismatch_data["data_col_name"] + "'" + "; "
+
+                    comments = comments[:-1]
+                    column_count = validate_file.get_check_column_count()
+
+                    if not column_count:
+                        unmatched_data_list_source_def = validate_file.get_unmatched_column_list_source_def()
+                        unmatched_data_list_data = validate_file.get_unmatched_column_list_data()
+                        comments = ''
+
+                        if len(unmatched_data_list_source_def) > 0:
+                            comments = "Column not defined in source def and contained in uploaded file - " + str(unmatched_data_list_source_def)
+                        else:
+                            comments = "Column not defined in Upload file and contained in Source def - " + str(unmatched_data_list_data)
+
+                        file_uploads_create = get_create_file_upload_record(
+                            tenant_id=tenant_id,
+                            groups_id=groups_id,
+                            entity_id=entity_id,
+                            m_source_id=m_source_id,
+                            source_name=source_name,
+                            m_processing_layer_id=m_processing_layer_id,
+                            m_processing_sub_layer_id=m_processing_sub_layer_id,
+                            processing_layer_id=processing_layer_id,
+                            file_name=file_name_with_date.split("/")[-1],
+                            file_size=file_size,
+                            file_path=file_name_with_date,
+                            status=status,
+                            comment=comments,
+                            row_count=0,
+                            user_id=user_id,
+                            gst_month=None
+                        )
+
+                        if file_uploads_create == "Success":
+                            return JsonResponse({"Status": "Success", "Message": "File Uploaded Successfully!!!"})
+                        elif file_uploads_create == "Error":
+                            return JsonResponse({"Status": "Error"})
+
+                    file_uploads_create = get_create_file_upload_record(
+                        tenant_id=tenant_id,
+                        groups_id=groups_id,
+                        entity_id=entity_id,
+                        m_source_id=m_source_id,
+                        source_name=source_name,
+                        m_processing_layer_id=m_processing_layer_id,
+                        m_processing_sub_layer_id=m_processing_sub_layer_id,
+                        processing_layer_id=processing_layer_id,
+                        file_name=file_name_with_date.split("/")[-1],
+                        file_size=file_size,
+                        file_path=file_name_with_date,
+                        status=status,
+                        comment=comments,
+                        row_count=0,
+                        user_id=user_id,
+                        gst_month=None
+                    )
+
+                    if file_uploads_create == "Success":
+                        return JsonResponse({"Status": "Success", "Message": "File Uploaded Successfully!!!"})
+                    elif file_uploads_create == "Error":
+                        return JsonResponse({"Status": "Error"})
+
+                else:
+                    data_type_check = validate_file.get_data_type_check()
+                    # print("data_type_check", data_type_check)
+
+                    if not data_type_check:
+                        incorrect_data_type_list_data = validate_file.get_incorrect_data_type_list_data()
+
+                        for incorrect_data in incorrect_data_type_list_data:
+                            comments = comments + "Incorrect Data in (row,column) - " + str(incorrect_data["column_position"]) + ". value should be '" + str(incorrect_data["data_type"]) + "'; "
+
+                        comments = comments[:-1]
+
+                        file_uploads_create = get_create_file_upload_record(
+                            tenant_id=tenant_id,
+                            groups_id=groups_id,
+                            entity_id=entity_id,
+                            m_source_id=m_source_id,
+                            source_name=source_name,
+                            m_processing_layer_id=m_processing_layer_id,
+                            m_processing_sub_layer_id=m_processing_sub_layer_id,
+                            processing_layer_id=processing_layer_id,
+                            file_name=file_name_with_date.split("/")[-1],
+                            file_size=file_size,
+                            file_path=file_name_with_date,
+                            status=status,
+                            comment=comments,
+                            row_count=0,
+                            user_id=user_id,
+                            gst_month=None
+                        )
+
+                        if file_uploads_create == "Success":
+                            return JsonResponse({"Status": "Success", "Message": "File Uploaded Successfully!!!"})
+                        elif file_uploads_create == "Error":
+                            return JsonResponse({"Status": "Error"})
+
+            file_uploads_create = get_create_file_upload_record(
+                tenant_id=tenant_id,
+                groups_id=groups_id,
+                entity_id=entity_id,
+                m_source_id=m_source_id,
+                source_name=source_name,
+                m_processing_layer_id=m_processing_layer_id,
+                m_processing_sub_layer_id=m_processing_sub_layer_id,
+                processing_layer_id=processing_layer_id,
+                file_name=file_name_with_date.split("/")[-1],
+                file_size=file_size,
+                file_path=file_name_with_date.replace("import", "input"),
+                status='VALIDATED',
+                comment = "File Validated Successfully!!!",
+                row_count=validate_file.get_excel_data_row_count(),
+                user_id=user_id,
+                gst_month=gst_month
+            )
+
+            # Move File to Input Folder Location
+
+            file_name_with_date_input = file_name_with_date.replace("import", "input")
+            with open(file_name_with_date_input, 'wb+') as destination:
+                for chunk in request.FILES["fileName"]:
+                    destination.write(chunk)
+
+            if file_uploads_create == "Success":
+                return JsonResponse({"Status": "Success", "Message": "File Uploaded Successfully!!!"})
+            elif file_uploads_create == "Error":
+                return JsonResponse({"Status": "Error"})
+
+        return JsonResponse({"Status": "Error"})
+
+    except Exception:
+        logger.error("Error in Get Update Validate Error to Batch Function!!!", exc_info=True)
+        return JsonResponse({"Status": "Error"})
+
+@csrf_exempt
+def get_target_mapping_details(request, *args, **kwargs):
+    try:
+        if request.method == 'POST':
+
+            body = request.body.decode('utf-8')
+            data = json.loads(body)
+
+            for key, value in data.items():
+                if key == "tenants_id":
+                    tenants_id = value
+                if key == "groups_id":
+                    groups_id = value
+                if key == "entities_id":
+                    entities_id = value
+                if key == "m_processing_layer_id":
+                    m_processing_layer_id = value
+                if key == "m_processing_sub_layer_id":
+                    m_processing_sub_layer_id = value
+                if key == "processing_layer_id":
+                    processing_layer_id = value
+                if key == "target_files_id":
+                    target_files_id = value
+
+            target_file_definitions = TargetFileDefinitions.objects.filter(tenants_id = tenants_id, groups_id = groups_id, entities_id = entities_id, m_processing_layer_id = m_processing_layer_id, m_processing_sub_layer_id = m_processing_sub_layer_id, processing_layer_id = processing_layer_id, target_files_id = target_files_id, is_active = True)
+
+            target_mapping_list = []
+
+            for target_file in target_file_definitions:
+                print("target_file", target_file)
+                target_def_name = target_file.field_name
+
+                source_details_list = []
+                files_config_list = target_file.files_config
+
+                if files_config_list is not None:
+                    for file_config in files_config_list:
+                        print("file_config", file_config)
+                        source_id = file_config["sourceId"]
+                        source_definition_id = file_config["sourceDefinitionId"]
+
+                        sources = Sources.objects.filter(id = source_id)
+
+                        for source in sources:
+                            source_name = source.source_name
+
+                        source_definitions = SourceDefinitions.objects.filter(id = source_definition_id)
+
+                        for source_def in source_definitions:
+                            source_definition_name = source_def.attribute_name
+
+                        source_details_list.append({
+                            "Source Name": source_name,
+                            "Source Def Name": source_definition_name
+                        })
+                else:
+                    source_details_list.append([])
+
+                target_mapping_list.append({
+                    "target": target_def_name,
+                    "mapping": source_details_list
+                })
+
+            return JsonResponse({"Status": "Success", "data": target_mapping_list})
+
+        return JsonResponse({"Status": "Error"})
+
+    except Exception:
+        logger.error("Error in Get Target Mapping Details Function!!!", exc_info=True)
+        return JsonResponse({"Status": "Error"})
+
+def get_out(request):
+    try:
+        """
+        
+            click on process will get files id, file name, source id
+            get target id list from source id  ||||  "target_ids": ["2", "1"]
+            From Target Id get all the target def list
+                    take files config and match our source id 
+                    will get filter of final target def list
+                    
+            
+            
+            through source id get source def list from files config 
+        
+        """
+
+
+        target_id=1
+        target_def = TargetFileDefinitions.objects.filter(target_files=target_id)
+        target_col_list = []
+        len_target_field = len(target_def)
+        print(len_target_field)
+        for target in target_def:
+            target_col_list.append(
+                {
+                    "target_col": target.field_name,
+                    "target_config": target.files_config,
+                    "target_storage_colm": target.storage_colm
+                }
+            )
+        contain_id = []
+        contain_target_def_col = []
+        contain_source_name = []
+        contain_storage_colm = []
+        for i in range(0, len_target_field):
+            contain_storage_colm.append(target_col_list[i]['target_storage_colm'])
+            for tar_con in target_col_list[i]['target_config']['source_data']:
+                contain_id.append(tar_con['source_id'])
+                contain_target_def_col.append(tar_con['source_def_name'])
+        contain_id = list(set(contain_id))
+        res = []
+        for i in contain_target_def_col:
+            if i not in res:
+                res.append(i)
+        list_col = list(set(contain_target_def_col))
+        data_final_df_list = []
+        for j in contain_id:
+            for i in range(0, len(set(contain_target_def_col))):
+
+                for tar_con in target_col_list[i]['target_config']['source_data']:
+                    if tar_con['source_id'] == j:
+                        contain_source_name.append(tar_con['source_def_name'])
+            get_output = get_data_from_file(get_excel_loc(j), 'sheet1', 'xlsx', contain_source_name, 1, '', '',
+                                            '', '', '')
+            get_data = final_data(get_output, contain_source_name, list_col)
+            print("/n#################")
+            print(get_data)
+            data_dict = dict()
+            for z in range(0, len(get_data)):
+                data_dict[list_col[z]] = get_data[z]
+            proper_data_df = pd.DataFrame(data_dict)
+            data_final_df_list.append(proper_data_df)
+            contain_source_name.clear()
+        print("Final Data")
+        data_final_df = pd.concat(data_final_df_list, axis=0, ignore_index=False)
+        data_final_df_proper = data_final_df.replace(np.nan, "")
+        print(data_final_df_proper)
+        data_final_df_proper=data_final_df_proper.reindex(columns=res)
+        print(data_final_df_proper)
+        print(data_final_df_proper.columns)
+        print("Storage coloum name")
+        storage_save(data_final_df_proper,contain_storage_colm,target_id)
+        return JsonResponse({"Status": "Success"})
+    except Exception as e:
+        print(e)
+        return JsonResponse({"Status": "Error"})
+# #
 #
 # def get_excel_loc(source_id):
 #     source = Sources.objects.get(id=source_id)
@@ -599,28 +1039,7 @@ def get_update_file_gst_month_all(request, *args, **kwargs):
 #         return {"Status": "Error"}
 #
 #
-# def storage_config(types):
-#     try:
-#         count_for_text = 0
-#         count_for_int = 0
-#         # count_for_Dec = 0
-#         # count_for_Date = 0
-#         coloumn_name_list = []
-#         for i in range(0, len(types)):
-#             if types[i] == 'Str':
-#                 count_for_text = count_for_text + 1
-#                 name = 'Reference_Text' + str(count_for_text)
-#                 coloumn_name_list.append(name)
-#             elif types[i] == 'Integer':
-#                 count_for_int = count_for_int + 1
-#                 name = 'Reference_Int' + str(count_for_int)
-#                 coloumn_name_list.append(name)
-#         print(coloumn_name_list)
-#         print(count_for_text)
-#         print(count_for_int)
-#     except Exception as e:
-#         print(e)
-#         return {"Status": "Error"}
+
 #
 #
 # def get_create_sql_file(data, insert_query, file_type):
